@@ -76,66 +76,6 @@ struct SwitchRoute final {
   std::uint64_t configurationBit = 0;
 };
 
-struct SwitchIdlePresentation final {
-  std::vector<std::uint32_t> requesterOrder;
-  std::uint32_t resetPosition = 0;
-};
-
-struct SwitchImplementationArbitration final {
-  std::vector<::fabric::SwitchArbitrationComponent> components;
-  std::optional<SwitchIdlePresentation> idlePresentation;
-
-  bool hasCursorState() const {
-    return idlePresentation.has_value() ||
-           llvm::any_of(components, [](const auto &component) {
-             return component.roundRobinResetPosition.has_value();
-           });
-  }
-};
-
-llvm::Expected<SwitchImplementationArbitration>
-deriveSwitchImplementationArbitration(
-    ::fabric::Schedule schedule, std::uint32_t inputCount,
-    std::uint32_t outputCount,
-    llvm::ArrayRef<std::vector<std::uint32_t>> sourcesByOutput,
-    const ::fabric::ResourceContract &contract) {
-  auto components = ::fabric::deriveSwitchArbitrationComponents(
-      schedule, inputCount, outputCount, sourcesByOutput, contract);
-  if (!components)
-    return components.takeError();
-  std::optional<SwitchIdlePresentation> idlePresentation;
-  if (schedule == ::fabric::Schedule::Temporal) {
-    const auto policy = contract.grantPolicy();
-    if (policy) {
-      SwitchIdlePresentation presentation;
-      if (const auto *fixed =
-              std::get_if<::fabric::FixedPriorityView>(&*policy)) {
-        presentation.requesterOrder.reserve(fixed->requesterOrder().size());
-        for (::fabric::RequesterKey requester : fixed->requesterOrder())
-          presentation.requesterOrder.push_back(requester.ordinal());
-      } else {
-        const auto &roundRobin = std::get<::fabric::RoundRobinView>(*policy);
-        presentation.requesterOrder.reserve(
-            roundRobin.requesterCycle().size());
-        for (::fabric::RequesterKey requester : roundRobin.requesterCycle())
-          presentation.requesterOrder.push_back(requester.ordinal());
-        const auto reset = llvm::find(presentation.requesterOrder,
-                                      roundRobin.resetCursor().ordinal());
-        if (reset == presentation.requesterOrder.end())
-          return invalid("switch RoundRobin reset requester is absent");
-        presentation.resetPosition = static_cast<std::uint32_t>(
-            reset - presentation.requesterOrder.begin());
-      }
-      idlePresentation = std::move(presentation);
-    }
-  }
-  return SwitchImplementationArbitration{std::move(*components),
-                                         std::move(idlePresentation)};
-}
-
-unsigned counterWidth(std::uint64_t bound);
-mlir::Value incrementModulo(mlir::OpBuilder &builder, mlir::Location location,
-                            mlir::Value value, std::uint64_t modulus);
 void appendKeyU64(std::vector<std::uint8_t> &key, std::uint64_t value);
 void appendKeyDataPath(std::vector<std::uint8_t> &key,
                        ::fabric::DataPathType path);
@@ -233,16 +173,13 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
       fabric.resourceContract(fabric::FabricInventoryOwnerRef::of(sw));
   if (!resourceContract)
     return invalid("switch has no finalized ResourceContract");
-  auto arbitration = deriveSwitchImplementationArbitration(
+  auto arbitration = ::fabric::deriveSwitchArbitrationComponents(
       *schedule, inputCount, outputCount, sourcesByOutput, *resourceContract);
   if (!arbitration)
     return arbitration.takeError();
   const llvm::ArrayRef<::fabric::SwitchArbitrationComponent> components =
-      arbitration->components;
-  const std::optional<SwitchIdlePresentation> idlePresentation =
-      arbitration->idlePresentation;
+      *arbitration;
   const bool consumesClockAndReset = resourceContract->stateCount() != 0;
-  const bool needsCursorBackedges = arbitration->hasCursorState();
 
   std::uint64_t temporalEntryCount = 0;
   std::uint64_t temporalTagWidth = 0;
@@ -370,221 +307,97 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
                           {prefixReady[output], suffixReady[output + 1]});
         }
 
-        std::vector<mlir::Value> selectedInput(
+        // `grantedInput` is the input's permission to transfer, ignoring its
+        // own valid; `transferInput` is that permission taken by a valid
+        // token. A Temporal switch decides the permission from registered
+        // state alone: each multi-input physical component's grant pointer
+        // names the one input that may transfer, so no ready of the switch is
+        // a function of any valid of the same cycle and at most one input of
+        // a component transfers per cycle. A Spatial switch owns no runtime
+        // arbiter: its selected rows are statically capacity-closed, and the
+        // conflict-free scan in physical requester order only withholds a
+        // malformed configuration's second claim on one output.
+        std::vector<mlir::Value> grantedInput(
             inputCount, bitConstant(bodyBuilder, location, false));
-        std::vector<mlir::Value> admissibleInput(
+        std::vector<mlir::Value> transferInput(
             inputCount, bitConstant(bodyBuilder, location, false));
-        std::optional<circt::BackedgeBuilder> backedges;
-        if (needsCursorBackedges)
-          backedges.emplace(bodyBuilder, location);
+        circt::BackedgeBuilder backedges(bodyBuilder, location);
         for (const ::fabric::SwitchArbitrationComponent &component :
              components) {
-          struct ArbitrationSelection final {
-            std::vector<mlir::Value> selected;
-            std::vector<mlir::Value> admissible;
-          };
-          const auto deriveSelection = [&](llvm::ArrayRef<unsigned> order) {
-            ArbitrationSelection result{
-                std::vector<mlir::Value>(
-                    inputCount, bitConstant(bodyBuilder, location, false)),
-                std::vector<mlir::Value>(
-                    inputCount, bitConstant(bodyBuilder, location, false))};
-            mlir::Value reserved = emptyRouteMask;
-            for (unsigned input : order) {
-              mlir::Value conflicts = circt::comb::AndOp::create(
-                  bodyBuilder, location, requestedRouteMask[input], reserved,
-                  true);
-              mlir::Value conflictFree = circt::comb::createOrFoldNot(
+          if (*schedule == ::fabric::Schedule::Temporal) {
+            RegisteredGrant grant = makeRegisteredGrant(
+                bodyBuilder, location, backedges,
+                component.requesterOrder.size(),
+                component.roundRobinResetPosition.has_value(),
+                component.roundRobinResetPosition.value_or(0),
+                accessor.getInput("clock"), accessor.getInput("reset"),
+                "switch_grant_" + std::to_string(component.inputs.front()),
+                clockReset);
+            // A requester of the component is an input whose resident row
+            // selects an output and whose token has arrived; the pointer's
+            // next value observes exactly that.
+            llvm::SmallVector<mlir::Value> componentRequest;
+            llvm::SmallVector<mlir::Value> fired;
+            componentRequest.reserve(component.requesterOrder.size());
+            fired.reserve(component.requesterOrder.size());
+            for (auto [position, input] :
+                 llvm::enumerate(component.requesterOrder)) {
+              grantedInput[input] = andValues(
                   bodyBuilder, location,
-                  circt::comb::ICmpOp::create(
-                      bodyBuilder, location, circt::comb::ICmpPredicate::ne,
-                      conflicts, emptyRouteMask, true));
-              result.admissible[input] =
+                  {grant.pointed[position], configuredRequest[input]});
+              transferInput[input] =
                   andValues(bodyBuilder, location,
-                            {configuredRequest[input], conflictFree});
-              result.selected[input] = andValues(
-                  bodyBuilder, location, {requested[input], conflictFree});
-              reserved = circt::comb::OrOp::create(
-                  bodyBuilder, location, reserved,
-                  circt::comb::MuxOp::create(
-                      bodyBuilder, location, result.selected[input],
-                      requestedRouteMask[input], emptyRouteMask, true),
-                  true);
+                            {grant.pointed[position], requested[input]});
+              componentRequest.push_back(requested[input]);
+              fired.push_back(andValues(
+                  bodyBuilder, location,
+                  {transferInput[input], routeReady[input]}));
             }
-            return result;
-          };
-
-          if (!component.roundRobinResetPosition) {
-            ArbitrationSelection selection =
-                deriveSelection(component.requesterOrder);
-            for (unsigned input : component.inputs) {
-              selectedInput[input] = selection.selected[input];
-              admissibleInput[input] = selection.admissible[input];
-            }
+            advanceRegisteredGrant(
+                bodyBuilder, location, grant,
+                packBits(bodyBuilder, location, componentRequest),
+                orValues(bodyBuilder, location, fired));
             continue;
           }
 
-          const unsigned cursorWidth =
-              counterWidth(component.requesterOrder.size());
-          circt::Backedge cursorNext =
-              backedges->get(bodyBuilder.getIntegerType(cursorWidth));
-          mlir::Value cursor = createRegister(
-              bodyBuilder, location, cursorNext, accessor.getInput("clock"),
-              accessor.getInput("reset"),
-              llvm::APInt(cursorWidth, *component.roundRobinResetPosition),
-              "round_robin_cursor_" + std::to_string(component.inputs.front()) +
-                  "_reg",
-              clockReset.asynchronousReset);
-          mlir::Value nextCursor = cursor;
-          for (unsigned start = 0; start != component.requesterOrder.size();
-               ++start) {
-            std::vector<unsigned> order;
-            order.reserve(component.requesterOrder.size());
-            for (unsigned offset = 0; offset != component.requesterOrder.size();
-                 ++offset)
-              order.push_back(
-                  component.requesterOrder[(start + offset) %
-                                           component.requesterOrder.size()]);
-            ArbitrationSelection selection = deriveSelection(order);
-            mlir::Value cursorIs = circt::comb::ICmpOp::create(
-                bodyBuilder, location, circt::comb::ICmpPredicate::eq, cursor,
-                circt::hw::ConstantOp::create(bodyBuilder, location,
-                                              llvm::APInt(cursorWidth, start)),
+          mlir::Value reserved = emptyRouteMask;
+          for (unsigned input : component.requesterOrder) {
+            mlir::Value conflicts = circt::comb::AndOp::create(
+                bodyBuilder, location, requestedRouteMask[input], reserved,
                 true);
-            mlir::Value candidateNext = circt::hw::ConstantOp::create(
-                bodyBuilder, location, llvm::APInt(cursorWidth, start));
-            for (unsigned offset = 0; offset != order.size(); ++offset) {
-              const unsigned input = order[offset];
-              selectedInput[input] = circt::comb::OrOp::create(
-                  bodyBuilder, location, selectedInput[input],
-                  andValues(bodyBuilder, location,
-                            {cursorIs, selection.selected[input]}));
-              admissibleInput[input] = circt::comb::OrOp::create(
-                  bodyBuilder, location, admissibleInput[input],
-                  andValues(bodyBuilder, location,
-                            {cursorIs, selection.admissible[input]}));
-              mlir::Value fire =
-                  andValues(bodyBuilder, location,
-                            {selection.selected[input], routeReady[input]});
-              const unsigned next = (start + offset + 1) % order.size();
-              candidateNext = circt::comb::MuxOp::create(
-                  bodyBuilder, location, fire,
-                  circt::hw::ConstantOp::create(bodyBuilder, location,
-                                                llvm::APInt(cursorWidth, next)),
-                  candidateNext, true);
-            }
-            nextCursor =
-                circt::comb::MuxOp::create(bodyBuilder, location, cursorIs,
-                                           candidateNext, nextCursor, true);
-          }
-          cursorNext.setValue(nextCursor);
-        }
-
-        // A temporal switch presents the tag of idle candidates so the
-        // downstream readiness of a row is observable before the token's
-        // valid arrives: an atomic upstream fanout asserts valid on one output
-        // only after every peer output is ready, so readiness must never wait
-        // for valid. Valid requesters are presented by the grant policy; among
-        // idle candidates whose selected outputs overlap, a free-running
-        // rotation presents one at a time and never changes the grant order,
-        // while candidates whose selected outputs no other candidate claims
-        // are presented together. An input is ready only while it is
-        // presented on every output it routes to, so a row that contends with
-        // no other row is always presented and its readiness reflects only
-        // its outputs' readiness, never the port's own valid. Only another
-        // input's grant excludes a candidate: the grant is exclusive per
-        // output, so an output this input holds is not held by another.
-        std::vector<mlir::Value> presentedInput = selectedInput;
-        if (*schedule == ::fabric::Schedule::Temporal) {
-          mlir::Value held = emptyRouteMask;
-          for (unsigned input = 0; input != inputCount; ++input)
-            held = circt::comb::OrOp::create(
-                bodyBuilder, location, held,
+            mlir::Value conflictFree = circt::comb::createOrFoldNot(
+                bodyBuilder, location,
+                circt::comb::ICmpOp::create(
+                    bodyBuilder, location, circt::comb::ICmpPredicate::ne,
+                    conflicts, emptyRouteMask, true));
+            grantedInput[input] =
+                andValues(bodyBuilder, location,
+                          {configuredRequest[input], conflictFree});
+            transferInput[input] = andValues(
+                bodyBuilder, location, {requested[input], conflictFree});
+            reserved = circt::comb::OrOp::create(
+                bodyBuilder, location, reserved,
                 circt::comb::MuxOp::create(
-                    bodyBuilder, location, selectedInput[input],
+                    bodyBuilder, location, transferInput[input],
                     requestedRouteMask[input], emptyRouteMask, true),
                 true);
-          std::vector<mlir::Value> candidates(inputCount);
-          for (unsigned input = 0; input != inputCount; ++input) {
-            mlir::Value overlap = circt::comb::AndOp::create(
-                bodyBuilder, location, requestedRouteMask[input], held, true);
-            candidates[input] = andValues(
-                bodyBuilder, location,
-                {configuredRequest[input],
-                 orValues(bodyBuilder, location,
-                          {selectedInput[input],
-                           circt::comb::createOrFoldNot(
-                               bodyBuilder, location,
-                               circt::comb::ICmpOp::create(
-                                   bodyBuilder, location,
-                                   circt::comb::ICmpPredicate::ne, overlap,
-                                   emptyRouteMask, true))})});
           }
-          std::vector<mlir::Value> idleSelected(
-              inputCount, bitConstant(bodyBuilder, location, false));
-          if (!idlePresentation) {
-            idleSelected = candidates;
-          } else {
-            const auto &order = idlePresentation->requesterOrder;
-            const unsigned candidateCount = static_cast<unsigned>(order.size());
-            const unsigned pointerWidth = counterWidth(candidateCount);
-            circt::Backedge pointerNext =
-                backedges->get(bodyBuilder.getIntegerType(pointerWidth));
-            mlir::Value pointer = createRegister(
-                bodyBuilder, location, pointerNext, accessor.getInput("clock"),
-                accessor.getInput("reset"),
-                llvm::APInt(pointerWidth, idlePresentation->resetPosition),
-                "idle_presentation_reg", clockReset.asynchronousReset);
-            pointerNext.setValue(incrementModulo(bodyBuilder, location, pointer,
-                                                 candidateCount));
-            for (unsigned start = 0; start != candidateCount; ++start) {
-              mlir::Value pointerIs = circt::comb::ICmpOp::create(
-                  bodyBuilder, location, circt::comb::ICmpPredicate::eq,
-                  pointer,
-                  circt::hw::ConstantOp::create(
-                      bodyBuilder, location, llvm::APInt(pointerWidth, start)),
-                  true);
-              mlir::Value claimed = emptyRouteMask;
-              for (unsigned offset = 0; offset != candidateCount; ++offset) {
-                const unsigned position = (start + offset) % candidateCount;
-                const unsigned input = order[position];
-                mlir::Value contention = circt::comb::AndOp::create(
-                    bodyBuilder, location, requestedRouteMask[input], claimed,
-                    true);
-                mlir::Value presented =
-                    andValues(bodyBuilder, location,
-                              {pointerIs, candidates[input],
-                               circt::comb::createOrFoldNot(
-                                   bodyBuilder, location,
-                                   circt::comb::ICmpOp::create(
-                                       bodyBuilder, location,
-                                       circt::comb::ICmpPredicate::ne,
-                                       contention, emptyRouteMask, true))});
-                idleSelected[input] = circt::comb::OrOp::create(
-                    bodyBuilder, location, idleSelected[input], presented);
-                claimed = circt::comb::OrOp::create(
-                    bodyBuilder, location, claimed,
-                    circt::comb::MuxOp::create(
-                        bodyBuilder, location, presented,
-                        requestedRouteMask[input], emptyRouteMask, true),
-                    true);
-              }
-            }
-          }
-          for (unsigned input = 0; input != inputCount; ++input)
-            presentedInput[input] = circt::comb::OrOp::create(
-                bodyBuilder, location, selectedInput[input],
-                idleSelected[input]);
         }
+
+        // A Temporal switch drives the granted input's payload and tag on the
+        // outputs its resident row selects whether or not its valid has
+        // arrived, so a downstream row's capacity term, and the readiness that
+        // term gates, stay observable before the token does. A Spatial switch
+        // drives the payload of the input that actually transfers.
+        const std::vector<mlir::Value> &payloadSource =
+            *schedule == ::fabric::Schedule::Temporal ? grantedInput
+                                                      : transferInput;
 
         for (unsigned input = 0; input != inputCount; ++input) {
           accessor.setOutput(
               inputEndpoints[input]->ready.getName(),
               andValues(bodyBuilder, location,
-                        {*schedule == ::fabric::Schedule::Temporal
-                             ? presentedInput[input]
-                             : admissibleInput[input],
-                         routeReady[input]}));
+                        {grantedInput[input], routeReady[input]}));
         }
 
         for (unsigned output = 0; output != outputCount; ++output) {
@@ -605,15 +418,15 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
           llvm::SmallVector<mlir::Value> validTerms;
           for (unsigned input = 0; input != inputCount; ++input) {
             const EndpointPlan &inputEndpoint = *inputEndpoints[input];
-            mlir::Value selected = andValues(
+            mlir::Value transferred = andValues(
                 bodyBuilder, location,
-                {selectedInput[input], requestedRoute[input][output]});
-            mlir::Value presented = andValues(
+                {transferInput[input], requestedRoute[input][output]});
+            mlir::Value sourced = andValues(
                 bodyBuilder, location,
-                {presentedInput[input], requestedRoute[input][output]});
+                {payloadSource[input], requestedRoute[input][output]});
             validTerms.push_back(
                 andValues(bodyBuilder, location,
-                          {selected, peerRouteReady[input][output]}));
+                          {transferred, peerRouteReady[input][output]}));
             auto adapted = adaptForwardTransportSignals(
                 bodyBuilder, location, inputEndpoint.dataPath,
                 outputEndpoint.dataPath,
@@ -629,16 +442,15 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
                         : std::nullopt});
             if (!adapted) {
               materializationError = llvm::toString(adapted.takeError());
-              if (backedges)
-                backedges->abandon();
+              backedges.abandon();
               return;
             }
             if (outputEndpoint.data)
-              data = circt::comb::MuxOp::create(bodyBuilder, location,
-                                                presented, *adapted->payload,
-                                                data, true);
+              data = circt::comb::MuxOp::create(
+                  bodyBuilder, location, sourced, *adapted->payload, data,
+                  true);
             if (outputEndpoint.tag)
-              tag = circt::comb::MuxOp::create(bodyBuilder, location, presented,
+              tag = circt::comb::MuxOp::create(bodyBuilder, location, sourced,
                                                *adapted->tag, tag, true);
           }
           if (outputEndpoint.data)
@@ -652,7 +464,8 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
   if (materializationError)
     return invalid(*materializationError);
   std::vector<std::uint8_t> implementationKey;
-  appendKeyU64(implementationKey, 3);
+  // The switch implementation identity; 4 is the registered grant.
+  appendKeyU64(implementationKey, 4);
   appendKeyU64(implementationKey, static_cast<std::uint32_t>(*schedule));
   appendKeyU64(implementationKey, decoder->encodedBitCount);
   appendKeyU64(implementationKey, clockReset.asynchronousReset);
@@ -685,13 +498,6 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
     if (component.roundRobinResetPosition)
       appendKeyU64(implementationKey, *component.roundRobinResetPosition);
   }
-  appendKeyU64(implementationKey, idlePresentation.has_value());
-  if (idlePresentation) {
-    appendKeyU64(implementationKey, idlePresentation->requesterOrder.size());
-    for (unsigned requester : idlePresentation->requesterOrder)
-      appendKeyU64(implementationKey, requester);
-    appendKeyU64(implementationKey, idlePresentation->resetPosition);
-  }
   appendKeyU64(implementationKey, temporalEntryCount);
   appendKeyU64(implementationKey, temporalTagWidth);
   appendKeyU64(implementationKey, temporalEntryWidth);
@@ -701,10 +507,6 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
                       std::move(implementationKey),
                       std::move(*configuration),
                       std::move(*decoder)};
-}
-
-unsigned counterWidth(std::uint64_t bound) {
-  return std::max(1U, llvm::Log2_64_Ceil(bound));
 }
 
 void appendKeyU64(std::vector<std::uint8_t> &key, std::uint64_t value) {
@@ -725,24 +527,6 @@ void appendKeyApInt(std::vector<std::uint8_t> &key, const llvm::APInt &value) {
     key.push_back(static_cast<std::uint8_t>(
         value.extractBitsAsZExtValue(std::min(8U, value.getBitWidth() - bit),
                                      bit)));
-}
-
-mlir::Value incrementModulo(mlir::OpBuilder &builder, mlir::Location location,
-                            mlir::Value value, std::uint64_t modulus) {
-  const unsigned width =
-      mlir::cast<mlir::IntegerType>(value.getType()).getWidth();
-  mlir::Value one =
-      circt::hw::ConstantOp::create(builder, location, llvm::APInt(width, 1));
-  mlir::Value zero =
-      circt::hw::ConstantOp::create(builder, location, llvm::APInt(width, 0));
-  mlir::Value last = circt::hw::ConstantOp::create(
-      builder, location, llvm::APInt(width, modulus - 1));
-  mlir::Value wraps = circt::comb::ICmpOp::create(
-      builder, location, circt::comb::ICmpPredicate::eq, value, last, true);
-  mlir::Value incremented =
-      circt::comb::AddOp::create(builder, location, value, one, true);
-  return circt::comb::MuxOp::create(builder, location, wraps, zero, incremented,
-                                    true);
 }
 
 llvm::Expected<FifoModule>
@@ -836,8 +620,8 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
                 ? matchesCode(bodyBuilder, location, fieldSignal, *bypassCode)
                 : bitConstant(bodyBuilder, location, false);
         circt::BackedgeBuilder backedges(bodyBuilder, location);
-        const unsigned pointerBits = counterWidth(depth);
-        const unsigned occupancyBits = counterWidth(depth + 1);
+        const unsigned pointerBits = indexWidth(depth);
+        const unsigned occupancyBits = indexWidth(depth + 1);
         const unsigned tagWidthBits = output->dataPath.tagWidthBits;
         const auto integerConstant = [&](unsigned width, std::uint64_t value) {
           return circt::hw::ConstantOp::create(bodyBuilder, location,

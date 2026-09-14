@@ -7,6 +7,7 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/Twine.h"
 
 #include <cassert>
 
@@ -17,6 +18,82 @@ mlir::Value constant(mlir::OpBuilder &builder, mlir::Location location,
                      unsigned width, std::uint64_t value) {
   return circt::hw::ConstantOp::create(builder, location,
                                        llvm::APInt(width, value));
+}
+
+/// Encodes the requester that a one-hot-or-zero word names, advanced `step`
+/// positions in cyclic requester order, and falls back to `fallback` when no
+/// bit is set. Constant masks keep this one comparison per encoded bit
+/// instead of one fallback-width mux per requester.
+mlir::Value encodeSelected(mlir::OpBuilder &builder, mlir::Location location,
+                           mlir::Value packed, std::size_t requesterCount,
+                           std::size_t step, mlir::Value fallback) {
+  assert(requesterCount != 0 && "encoded requester domain must not be empty");
+  const unsigned width =
+      mlir::cast<mlir::IntegerType>(fallback.getType()).getWidth();
+  const llvm::APInt zeroMask(requesterCount, 0);
+  mlir::Value any = circt::comb::ICmpOp::create(
+      builder, location, circt::comb::ICmpPredicate::ne, packed,
+      circt::hw::ConstantOp::create(builder, location, zeroMask), true);
+  llvm::SmallVector<mlir::Value> encodedHighToLow;
+  encodedHighToLow.reserve(width);
+  for (unsigned bit = width; bit != 0; --bit) {
+    llvm::APInt mask(requesterCount, 0);
+    for (std::size_t requester = 0; requester != requesterCount; ++requester)
+      if ((((requester + step) % requesterCount) >> (bit - 1)) & 1U)
+        mask.setBit(requester);
+    if (mask.isZero()) {
+      encodedHighToLow.push_back(bitConstant(builder, location, false));
+      continue;
+    }
+    mlir::Value selected = circt::comb::AndOp::create(
+        builder, location, packed,
+        circt::hw::ConstantOp::create(builder, location, mask), true);
+    encodedHighToLow.push_back(circt::comb::ICmpOp::create(
+        builder, location, circt::comb::ICmpPredicate::ne, selected,
+        circt::hw::ConstantOp::create(builder, location, zeroMask), true));
+  }
+  mlir::Value encoded =
+      width == 1
+          ? encodedHighToLow.front()
+          : circt::comb::ConcatOp::create(builder, location, encodedHighToLow);
+  return circt::comb::MuxOp::create(builder, location, any, encoded, fallback,
+                                    true);
+}
+
+/// The first requester at or after `start` in cyclic requester order whose
+/// `requests` bit is set, and `fallback` when no bit is set. This is the scan
+/// of the registered-grant next-state function; the caller separates `start`
+/// from `fallback` so a scan that begins strictly after the pointer still
+/// falls back to the pointer.
+mlir::Value scanRequests(mlir::OpBuilder &builder, mlir::Location location,
+                         mlir::Value requests, std::size_t requesterCount,
+                         mlir::Value start, mlir::Value fallback) {
+  return encodeSelected(
+      builder, location,
+      roundRobinPackedSelection(builder, location, requests,
+                                static_cast<unsigned>(requesterCount), start),
+      requesterCount, 0, fallback);
+}
+
+/// The requester word that names `position` alone. One shift keeps this
+/// independent of the requester count, where one comparator per requester
+/// would not be.
+mlir::Value oneHotAt(mlir::OpBuilder &builder, mlir::Location location,
+                     mlir::Value position, unsigned requesterCount) {
+  const unsigned width =
+      mlir::cast<mlir::IntegerType>(position.getType()).getWidth();
+  assert(width <= requesterCount && "position is wider than its domain");
+  mlir::Value extended =
+      width == requesterCount
+          ? position
+          : circt::comb::ConcatOp::create(
+                builder, location,
+                llvm::ArrayRef<mlir::Value>{
+                    constant(builder, location, requesterCount - width, 0),
+                    position});
+  return circt::comb::ShlOp::create(
+      builder, location, constant(builder, location, requesterCount, 1),
+      extended, true);
 }
 
 } // namespace
@@ -41,22 +118,13 @@ mlir::Value roundRobinPackedSelection(mlir::OpBuilder &builder,
   assert(mlir::cast<mlir::IntegerType>(packed.getType()).getWidth() ==
              requestCount &&
          "packed request width disagrees with its round-robin domain");
-  const unsigned cursorWidth =
-      mlir::cast<mlir::IntegerType>(cursor.getType()).getWidth();
-  assert(cursorWidth == indexWidth(requestCount) &&
+  assert(mlir::cast<mlir::IntegerType>(cursor.getType()).getWidth() ==
+             indexWidth(requestCount) &&
          "round-robin cursor has the wrong width for its requester domain");
   if (requestCount == 1)
     return packed;
-  mlir::Value extendedCursor = cursor;
-  if (cursorWidth < requestCount)
-    extendedCursor = circt::comb::ConcatOp::create(
-        builder, location,
-        llvm::ArrayRef<mlir::Value>{
-            constant(builder, location, requestCount - cursorWidth, 0),
-            cursor});
-  mlir::Value cursorOneHot = circt::comb::ShlOp::create(
-      builder, location, constant(builder, location, requestCount, 1),
-      extendedCursor, true);
+  mlir::Value cursorOneHot =
+      oneHotAt(builder, location, cursor, requestCount);
   // Subtracting the cursor bit isolates the first request at or after that
   // position. If that interval is empty, the ordinary lowest bit is the
   // wrapped selection.
@@ -110,40 +178,7 @@ mlir::Value nextCursorFromPacked(mlir::OpBuilder &builder,
                                  mlir::Location location, mlir::Value current,
                                  mlir::Value packed,
                                  std::size_t requesterCount) {
-  assert(requesterCount != 0 && "cursor domain must not be empty");
-  const unsigned width =
-      mlir::cast<mlir::IntegerType>(current.getType()).getWidth();
-  const llvm::APInt zeroMask(requesterCount, 0);
-  mlir::Value anyFired = circt::comb::ICmpOp::create(
-      builder, location, circt::comb::ICmpPredicate::ne, packed,
-      circt::hw::ConstantOp::create(builder, location, zeroMask), true);
-
-  // Encode the granted successor with constant masks instead of expanding one
-  // cursor-width mux for every requester.
-  llvm::SmallVector<mlir::Value> encodedHighToLow;
-  encodedHighToLow.reserve(width);
-  for (unsigned bit = width; bit != 0; --bit) {
-    llvm::APInt mask(requesterCount, 0);
-    for (std::size_t requester = 0; requester != requesterCount; ++requester)
-      if ((((requester + 1) % requesterCount) >> (bit - 1)) & 1U)
-        mask.setBit(requester);
-    if (mask.isZero()) {
-      encodedHighToLow.push_back(bitConstant(builder, location, false));
-      continue;
-    }
-    mlir::Value selected = circt::comb::AndOp::create(
-        builder, location, packed,
-        circt::hw::ConstantOp::create(builder, location, mask), true);
-    encodedHighToLow.push_back(circt::comb::ICmpOp::create(
-        builder, location, circt::comb::ICmpPredicate::ne, selected,
-        circt::hw::ConstantOp::create(builder, location, zeroMask), true));
-  }
-  mlir::Value encoded =
-      width == 1
-          ? encodedHighToLow.front()
-          : circt::comb::ConcatOp::create(builder, location, encodedHighToLow);
-  return circt::comb::MuxOp::create(builder, location, anyFired, encoded,
-                                    current, true);
+  return encodeSelected(builder, location, packed, requesterCount, 1, current);
 }
 
 mlir::Value nextCursor(mlir::OpBuilder &builder, mlir::Location location,
@@ -181,6 +216,78 @@ void advanceStatefulSelection(mlir::OpBuilder &builder, mlir::Location location,
   if (selection.next)
     selection.next->setValue(
         nextCursor(builder, location, selection.cursor, fired));
+}
+
+RegisteredGrant makeRegisteredGrant(mlir::OpBuilder &builder,
+                                    mlir::Location location,
+                                    circt::BackedgeBuilder &backedges,
+                                    std::size_t requesterCount,
+                                    bool roundRobin, unsigned resetPosition,
+                                    mlir::Value clock, mlir::Value reset,
+                                    llvm::StringRef name,
+                                    const ClockResetPlan &clockReset) {
+  assert(requesterCount != 0 && "grant domain must not be empty");
+  if (requesterCount == 1)
+    return RegisteredGrant{std::nullopt,
+                           {bitConstant(builder, location, true)},
+                           constant(builder, location, 1, 1),
+                           mlir::Value{},
+                           roundRobin};
+  const unsigned count = static_cast<unsigned>(requesterCount);
+  const unsigned width = indexWidth(requesterCount);
+  circt::Backedge next = backedges.get(builder.getIntegerType(width));
+  mlir::Value pointer = createRegister(
+      builder, location, next, clock, reset, llvm::APInt(width, resetPosition),
+      (name + "_pointer_reg").str(), clockReset.asynchronousReset);
+  mlir::Value oneHot = oneHotAt(builder, location, pointer, count);
+  std::vector<mlir::Value> pointed;
+  pointed.reserve(requesterCount);
+  for (unsigned position = 0; position != count; ++position)
+    pointed.push_back(
+        circt::comb::ExtractOp::create(builder, location, oneHot, position, 1));
+  return RegisteredGrant{std::optional<circt::Backedge>(std::move(next)),
+                         std::move(pointed), oneHot, pointer, roundRobin};
+}
+
+void advanceRegisteredGrant(mlir::OpBuilder &builder, mlir::Location location,
+                            RegisteredGrant &grant, mlir::Value requests,
+                            mlir::Value fired) {
+  if (!grant.next)
+    return;
+  const unsigned count = static_cast<unsigned>(grant.pointed.size());
+  assert(mlir::cast<mlir::IntegerType>(requests.getType()).getWidth() ==
+             count &&
+         "packed request width disagrees with its grant domain");
+  const unsigned width =
+      mlir::cast<mlir::IntegerType>(grant.pointer.getType()).getWidth();
+  if (!grant.roundRobin) {
+    // FixedPriority names the highest-priority requester of this cycle, and
+    // keeps the pointer when none requests.
+    grant.next->setValue(scanRequests(builder, location, requests, count,
+                                      constant(builder, location, width, 0),
+                                      grant.pointer));
+    return;
+  }
+  // RoundRobin passes its turn on once the pointed requester has proceeded or
+  // has nothing to offer, and otherwise keeps it, so a requester whose
+  // service refuses holds its turn. The scan begins strictly after the
+  // pointer and ends at the pointer, so a lone continuous requester keeps its
+  // own turn every cycle.
+  mlir::Value requestedAtPointer = circt::comb::ICmpOp::create(
+      builder, location, circt::comb::ICmpPredicate::ne,
+      circt::comb::AndOp::create(builder, location, requests, grant.oneHot,
+                                 true),
+      constant(builder, location, count, 0), true);
+  mlir::Value blocked =
+      andValues(builder, location,
+                {requestedAtPointer,
+                 circt::comb::createOrFoldNot(builder, location, fired)});
+  grant.next->setValue(circt::comb::MuxOp::create(
+      builder, location, blocked, grant.pointer,
+      scanRequests(builder, location, requests, count,
+                   incrementModulo(builder, location, grant.pointer, count),
+                   grant.pointer),
+      true));
 }
 
 std::vector<mlir::Value> selectResultPresentation(

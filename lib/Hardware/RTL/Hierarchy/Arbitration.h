@@ -48,6 +48,45 @@ mlir::Value nextCursorFromPacked(mlir::OpBuilder &builder,
 mlir::Value nextCursor(mlir::OpBuilder &builder, mlir::Location location,
                        mlir::Value current, llvm::ArrayRef<mlir::Value> fired);
 
+/// The registered grant state of one arbitration component, as
+/// `Registered grant` in `docs/spec-fabric-switch.md` defines it and the
+/// shared resource contract applies it to every resource with a GrantPolicy.
+/// A component of more than one requester owns exactly one arbitration
+/// register, the grant pointer naming the one requester that may proceed;
+/// `pointed` is therefore a function of registered state alone and names
+/// exactly one position of the component-local policy order every cycle. The
+/// pointer's next value observes this cycle's live Valid vector, but feeds
+/// only the register's data input, so no readiness the grant gates is a
+/// function of a Valid of the same cycle.
+struct RegisteredGrant final {
+  std::optional<circt::Backedge> next;
+  std::vector<mlir::Value> pointed;
+  mlir::Value oneHot;
+  mlir::Value pointer;
+  bool roundRobin = true;
+};
+
+/// Builds that state over `requesterCount` positions of the component-local
+/// policy order, with the pointer reset at `resetPosition`. A one-requester
+/// component owns no register at all: its single requester is always the
+/// pointed one.
+RegisteredGrant makeRegisteredGrant(mlir::OpBuilder &builder,
+                                    mlir::Location location,
+                                    circt::BackedgeBuilder &backedges,
+                                    std::size_t requesterCount,
+                                    bool roundRobin, unsigned resetPosition,
+                                    mlir::Value clock, mlir::Value reset,
+                                    llvm::StringRef name,
+                                    const ClockResetPlan &clockReset);
+
+/// Closes the grant pointer's next-state function over `requests`, this
+/// cycle's live request word with one bit per component requester in the
+/// component-local policy order, and `fired`, the component's service of this
+/// cycle, which is the pointed requester's by construction.
+void advanceRegisteredGrant(mlir::OpBuilder &builder, mlir::Location location,
+                            RegisteredGrant &grant, mlir::Value requests,
+                            mlir::Value fired);
+
 /// A round-robin grant over a requester domain together with its registered
 /// cursor. A domain of at most one requester carries no cursor state.
 struct StatefulSelection final {

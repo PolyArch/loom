@@ -983,12 +983,13 @@ llvm::Expected<PeModule> buildTemporalPeModule(
                           portNearFullComplement[port]}),
                portCompletes[port]});
 
-        // A shared allocation unit grants its enqueue service to the
-        // highest-class requesting queue, then round-robin over the unit's
-        // canonical queue order from a cursor that advances only on a
-        // committed enqueue. A queue's grant never observes its own request, so
-        // the boundary ready stays independent of that port's valid. A
-        // dedicated unit has at most one requester and carries no policy.
+        // A shared allocation unit grants its enqueue service to the one queue
+        // its registered grant pointer names, so no queue's grant observes any
+        // port's valid of the same cycle and the boundary ready stays
+        // independent of it. The pointer's next value takes this cycle's
+        // highest-class requesting queue, round-robin among equals, and keeps
+        // the turn of a requesting queue whose enqueue did not commit. A
+        // dedicated unit has at most one requester and carries no pointer.
         std::vector<mlir::Value> queueGrant(
             queues.size(), bitConstant(bodyBuilder, location, true));
         for (auto [unitOrdinal, unit] : llvm::enumerate(units)) {
@@ -1008,51 +1009,44 @@ llvm::Expected<PeModule> buildTemporalPeModule(
                   portRank[port], memberRank, true);
             rank[member] = memberRank;
           }
-          const unsigned cursorWidth = indexWidth(memberCount);
-          circt::Backedge cursorNext =
-              backedges.get(bodyBuilder.getIntegerType(cursorWidth));
-          mlir::Value cursor = createRegister(
-              bodyBuilder, location, cursorNext, accessor.getInput("clock"),
-              accessor.getInput("reset"), llvm::APInt(cursorWidth, 0),
-              "operand_unit_" + std::to_string(unitOrdinal) +
-                  "_enqueue_cursor_reg",
-              clockReset.asynchronousReset);
+          RegisteredGrant grant = makeRegisteredGrant(
+              bodyBuilder, location, backedges, memberCount,
+              /*roundRobin=*/true, /*resetPosition=*/0,
+              accessor.getInput("clock"), accessor.getInput("reset"),
+              "operand_unit_" + std::to_string(unitOrdinal) + "_enqueue",
+              clockReset);
+          // A member requests only while no other active member outranks it,
+          // so the pointer's scan keeps the class priority the unit has
+          // always applied and breaks ties round-robin.
+          llvm::SmallVector<mlir::Value> requests;
+          requests.reserve(memberCount);
           for (std::size_t member = 0; member != memberCount; ++member) {
             llvm::SmallVector<mlir::Value> higher;
-            llvm::SmallVector<mlir::Value> candidates;
             for (std::size_t other = 0; other != memberCount; ++other) {
-              if (other == member) {
-                candidates.push_back(bitConstant(bodyBuilder, location, true));
+              if (other == member)
                 continue;
-              }
               higher.push_back(andValues(
                   bodyBuilder, location,
                   {active[other],
                    circt::comb::ICmpOp::create(
                        bodyBuilder, location, circt::comb::ICmpPredicate::ugt,
                        rank[other], rank[member], true)}));
-              candidates.push_back(andValues(
-                  bodyBuilder, location,
-                  {active[other],
-                   circt::comb::ICmpOp::create(
-                       bodyBuilder, location, circt::comb::ICmpPredicate::eq,
-                       rank[other], rank[member], true)}));
             }
-            mlir::Value selected = roundRobinPackedSelection(
-                bodyBuilder, location, candidates, cursor);
-            queueGrant[unit.queues[member]] =
+            requests.push_back(
                 andValues(bodyBuilder, location,
-                          {circt::comb::createOrFoldNot(
+                          {active[member],
+                           circt::comb::createOrFoldNot(
                                bodyBuilder, location,
-                               orValues(bodyBuilder, location, higher)),
-                           circt::comb::ExtractOp::create(
-                               bodyBuilder, location, selected, member, 1)});
+                               orValues(bodyBuilder, location, higher))}));
+            queueGrant[unit.queues[member]] = grant.pointed[member];
           }
           llvm::SmallVector<mlir::Value> committedMembers;
           for (std::uint32_t queue : unit.queues)
             committedMembers.push_back(queueRuntime[queue].enqueueCommit);
-          cursorNext.setValue(
-              nextCursor(bodyBuilder, location, cursor, committedMembers));
+          advanceRegisteredGrant(
+              bodyBuilder, location, grant,
+              packBits(bodyBuilder, location, requests),
+              orValues(bodyBuilder, location, committedMembers));
         }
 
         // ready = any_match AND AND(!match[i] OR queue_ready[i]);
@@ -1296,21 +1290,26 @@ llvm::Expected<PeModule> buildTemporalPeModule(
                         {packedFifoRequesterSelected,
                          packBits(bodyBuilder, location, matchDomain),
                          packedFifoRequesterKind});
-          const unsigned width = indexWidth(requestCount);
-          circt::Backedge next =
-              backedges.get(bodyBuilder.getIntegerType(width));
-          mlir::Value cursor = createRegister(
-              bodyBuilder, location, next, accessor.getInput("clock"),
-              accessor.getInput("reset"), llvm::APInt(width, 0),
-              "register_fifo_" + std::to_string(fifo) + "_read_cursor_reg",
-              clockReset.asynchronousReset);
-          fifoReadSelected[fifo] = roundRobinPackedSelection(
-              bodyBuilder, location, packedRequests, requestCount, cursor);
+          // The read service belongs to the one requester the registered grant
+          // pointer names, never to whichever requester this cycle's scan
+          // would reach first; the pointer then takes this cycle's requests.
+          RegisteredGrant grant = makeRegisteredGrant(
+              bodyBuilder, location, backedges, requestCount,
+              /*roundRobin=*/true, /*resetPosition=*/0,
+              accessor.getInput("clock"), accessor.getInput("reset"),
+              "register_fifo_" + std::to_string(fifo) + "_read", clockReset);
+          fifoReadSelected[fifo] = circt::comb::AndOp::create(
+              bodyBuilder, location, grant.oneHot, packedRequests, true);
           fifoReadCommitted.push_back(
               backedges.get(bodyBuilder.getIntegerType(requestCount)));
-          next.setValue(nextCursorFromPacked(bodyBuilder, location, cursor,
-                                             fifoReadCommitted.back(),
-                                             requestCount));
+          advanceRegisteredGrant(
+              bodyBuilder, location, grant, packedRequests,
+              circt::comb::ICmpOp::create(
+                  bodyBuilder, location, circt::comb::ICmpPredicate::ne,
+                  fifoReadCommitted.back(),
+                  circt::hw::ConstantOp::create(
+                      bodyBuilder, location, llvm::APInt(requestCount, 0)),
+                  true));
         }
 
         std::vector<std::vector<std::vector<std::vector<mlir::Value>>>>

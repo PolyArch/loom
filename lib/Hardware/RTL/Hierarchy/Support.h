@@ -214,6 +214,11 @@ ConfigurationBundleSignals configurationBundleSignals(
 /// The ordinal width of a closed domain of `count` members (at least one bit).
 unsigned indexWidth(std::uint64_t count);
 
+/// The cyclic successor of an ordinal in a closed domain of `modulus`
+/// members.
+mlir::Value incrementModulo(mlir::OpBuilder &builder, mlir::Location location,
+                            mlir::Value value, std::uint64_t modulus);
+
 mlir::Value bitConstant(mlir::OpBuilder &builder, mlir::Location location,
                         bool value);
 mlir::Value andValues(mlir::OpBuilder &builder, mlir::Location location,

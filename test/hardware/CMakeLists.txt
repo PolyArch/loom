@@ -693,11 +693,11 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
-  add_executable(loom-switch-idle-presentation-test
-    SwitchIdlePresentationTest.cpp
+  add_executable(loom-switch-registered-grant-test
+    SwitchRegisteredGrantTest.cpp
   )
 
-  target_link_libraries(loom-switch-idle-presentation-test PRIVATE
+  target_link_libraries(loom-switch-registered-grant-test PRIVATE
     LoomConfigurationTransportTestSupport
     LoomHardwareConfigurationTestSupport
     LoomADGBuilder

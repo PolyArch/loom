@@ -545,6 +545,24 @@ unsigned indexWidth(std::uint64_t count) {
   return std::max(1U, llvm::Log2_64_Ceil(std::max<std::uint64_t>(count, 1)));
 }
 
+mlir::Value incrementModulo(mlir::OpBuilder &builder, mlir::Location location,
+                            mlir::Value value, std::uint64_t modulus) {
+  const unsigned width =
+      mlir::cast<mlir::IntegerType>(value.getType()).getWidth();
+  mlir::Value one =
+      circt::hw::ConstantOp::create(builder, location, llvm::APInt(width, 1));
+  mlir::Value zero =
+      circt::hw::ConstantOp::create(builder, location, llvm::APInt(width, 0));
+  mlir::Value last = circt::hw::ConstantOp::create(
+      builder, location, llvm::APInt(width, modulus - 1));
+  mlir::Value wraps = circt::comb::ICmpOp::create(
+      builder, location, circt::comb::ICmpPredicate::eq, value, last, true);
+  mlir::Value incremented =
+      circt::comb::AddOp::create(builder, location, value, one, true);
+  return circt::comb::MuxOp::create(builder, location, wraps, zero, incremented,
+                                    true);
+}
+
 mlir::Value bitConstant(mlir::OpBuilder &builder, mlir::Location location,
                         bool value) {
   return circt::hw::ConstantOp::create(builder, location,
