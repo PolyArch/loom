@@ -1393,7 +1393,11 @@ verification remains authoritative even when a candidate has the best rank.
 Annealing owns an explicit positive temperature-level limit in addition to its
 per-level proposal formula. Calibration and objective magnitude affect the
 temperature values and acceptance probabilities, never the maximum number of
-levels. A bounded schedule executes at most that many levels and exactly one
+levels. A calibration sample that carries no energy-scale information, because
+no probed proposal worsened the energy, the target acceptance ratio is
+unreachable, or the selected delta is zero, yields the fallback temperature;
+an uninformative sample therefore starts the schedule at the fallback level,
+never at the minimum-temperature level that would end it. A bounded schedule executes at most that many levels and exactly one
 minimum-temperature level. Each transition selects the colder of the ordinary
 cooling result and the integer geometric envelope required to reach the
 minimum within the remaining levels; a linear integer envelope covers the

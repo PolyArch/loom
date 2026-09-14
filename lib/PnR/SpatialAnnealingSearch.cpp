@@ -963,6 +963,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
         fields["temperature_level_limit"] = annealing.temperatureLevelLimit;
         fields["calibration_slots"] = statistics.calibrationProposalSlots;
         fields["calibration_probes"] = statistics.calibrationProbeCount;
+        fields["positive_calibration_deltas"] =
+            static_cast<std::uint64_t>(positiveCalibrationDeltas_.size());
         fields["semantic_noop_actions"] = statistics.semanticNoopActionCount;
         fields["cached_inactive_actions"] =
             statistics.cachedInactiveActionCount;

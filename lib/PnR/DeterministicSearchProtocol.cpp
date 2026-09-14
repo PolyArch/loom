@@ -229,8 +229,13 @@ llvm::Expected<std::uint64_t> loom::pnr::calibrateAnnealingTemperature(
     llvm::ArrayRef<dse::ObjectiveWideValue> positiveDeltas) {
   if (llvm::Error error = validateResolvedPnrAnnealingPolicy(policy))
     return std::move(error);
+  // A sample with no worsening proposal carries no information about the
+  // energy scale, like an unreachable target ratio or a zero selected delta.
+  // The fallback temperature is the policy's answer for an uninformative
+  // sample; the minimum temperature would name the schedule's final level and
+  // let calibration decide how many levels run rather than how warm they are.
   if (positiveDeltas.empty())
-    return policy.minimumTemperature;
+    return policy.fallbackTemperature;
 
   std::vector<dse::ObjectiveWideValue> sorted(positiveDeltas.begin(),
                                               positiveDeltas.end());

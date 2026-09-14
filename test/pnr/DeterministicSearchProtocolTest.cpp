@@ -155,8 +155,9 @@ void calibrationUsesExactQuantileAndTarget() {
   require(take(loom::pnr::calibrateAnnealingTemperature(policy(), deltas)) ==
               18,
           "calibration did not select the exact stable quantile");
-  require(take(loom::pnr::calibrateAnnealingTemperature(policy(), {})) == 1,
-          "empty positive-delta calibration did not use the minimum");
+  require(take(loom::pnr::calibrateAnnealingTemperature(policy(), {})) ==
+              policy().fallbackTemperature,
+          "empty positive-delta calibration did not use the fallback");
 
   loom::ResolvedPnrAnnealingPolicy unreachable = policy();
   unreachable.targetInitialAcceptance = {999, 1000};
