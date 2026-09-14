@@ -1,0 +1,88 @@
+name: Implementation change
+description: Propose a bounded, publishable Loom implementation change
+title: "[Change]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This Issue is a public implementation contract, not a research roadmap. Keep complete hypotheses, planning, dependencies, and gate discussions in the private Project.
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: Public goal
+      description: State the user-visible or research-enabling outcome without disclosing the surrounding private roadmap.
+    validations:
+      required: true
+
+  - type: textarea
+    id: current-gap
+    attributes:
+      label: Current gap
+      description: Describe the current behavior and the exact missing or incorrect capability.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: authority-classification
+    attributes:
+      label: Authority classification
+      description: Select how this change relates to the current Loom product contract.
+      options:
+        - Implementation must catch up to the existing specification
+        - Specification and rationale must change before implementation
+        - No Loom product semantics change
+    validations:
+      required: true
+
+  - type: input
+    id: specification
+    attributes:
+      label: Normative WHAT owner
+      description: Link the current spec path and stable heading, or state that the change is repository infrastructure only.
+      placeholder: docs/spec-...md, heading ...
+    validations:
+      required: true
+
+  - type: input
+    id: rationale
+    attributes:
+      label: Rationale WHY owner
+      description: Link the corresponding rationale path and stable heading, when applicable.
+      placeholder: docs/rationales/...md, heading ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: implementation-boundary
+    attributes:
+      label: Implementation boundary
+      description: Define the coherent owner slice, affected consumers, and public deliverables.
+    validations:
+      required: true
+
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: Non-goals
+      description: Identify adjacent behavior this Issue deliberately does not claim or change.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-evidence
+    attributes:
+      label: Acceptance evidence
+      description: List realistic production paths, independent verifiers, artifacts, and required fidelity.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Public disclosure check
+      options:
+        - label: I removed private Project planning, unpublished research material, credentials, private paths, and restricted artifacts from this proposal.
+          required: true

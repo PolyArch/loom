@@ -1,0 +1,4 @@
+interface:
+  display_name: "Loom Evidence Audit"
+  short_description: "Validate Loom capability claims with exact evidence"
+  default_prompt: "Use $loom-evidence-audit to verify this Loom capability claim with exact artifacts and realistic evidence."

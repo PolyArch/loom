@@ -1,0 +1,4 @@
+interface:
+  display_name: "Loom Spec-Driven Change"
+  short_description: "Define WHAT and WHY before implementing Loom changes"
+  default_prompt: "Use $loom-spec-driven-change to define this Loom change from its canonical specifications before implementation."

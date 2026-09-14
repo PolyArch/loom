@@ -1,0 +1,4 @@
+interface:
+  display_name: "Loom GitHub Research Workflow"
+  short_description: "Bridge private research planning to public delivery"
+  default_prompt: "Use $loom-github-research-workflow to move this Loom research item through private planning and public delivery."
