@@ -904,79 +904,76 @@ mappingHardwareFeedbackFamily(const MappingHardwareFeedback &feedback) {
   return MappingHardwareFeedbackFamily::SpatialRouting;
 }
 
-llvm::Expected<std::optional<MappingHardwareFeedback>>
-selectMappingHardwareFeedback(const JointDesignExecution &execution,
-                              const ArtifactStore &artifacts) {
-  // Compute supply is a precondition for routing. An attempt that holds a
-  // closed compute-context Hall observation was refused for want of contexts
-  // before any route existed, so a later Spatial or System failure of the same
-  // candidate does not make that observation stale: it is the consequence of
-  // mapping around a deficit, not an independent boundary to repair. The
-  // reopen therefore consumes the Hall deficit first, and only an attempt with
-  // no Hall deficit is judged by its Spatial or System feedback, where the
-  // older rule still holds that a later boundary already has an admitted
-  // earlier frontier.
+llvm::Expected<MappingHardwareFeedbackSelection> selectMappingHardwareFeedback(
+    const JointDesignExecution &execution, const ArtifactStore &artifacts,
+    std::optional<MappingHardwareFeedbackFamily> previouslyConsumed) {
+  // The deepest boundary an attempt reached with an exact proposal is the
+  // one it is judged by: a candidate whose Mapping reached transport names
+  // the exact resource it ran out of, while a Hall deficit only reports that
+  // a cover was not admitted. A Hall deficit therefore leads only for an
+  // attempt that reached no later boundary, where compute supply is the
+  // precondition no route could be built without. A reopen chain alternates
+  // between the families a child keeps offering, so the family its parent's
+  // probe answered yields to the other one and neither is starved; a child
+  // that offers only the answered family is answered on it again.
   auto tech = selectTechHardwareFeedback(execution, artifacts);
   if (!tech)
     return tech.takeError();
-  std::optional<MappingHardwareFeedback> selected;
+  auto system = selectSystemHardwareFeedback(execution, artifacts);
+  if (!system)
+    return system.takeError();
+  auto spatial = selectSpatialHardwareFeedback(execution, artifacts);
+  if (!spatial)
+    return spatial.takeError();
+  std::vector<std::pair<MappingHardwareFeedbackFamily, MappingHardwareFeedback>>
+      offered;
+  if (*system)
+    offered.emplace_back(MappingHardwareFeedbackFamily::SystemAccCoreCapacity,
+                         MappingHardwareFeedback(std::move(**system)));
+  if (*spatial)
+    offered.emplace_back(MappingHardwareFeedbackFamily::SpatialRouting,
+                         MappingHardwareFeedback(std::move(**spatial)));
+  if (*tech)
+    offered.emplace_back(MappingHardwareFeedbackFamily::TechComputeContextHall,
+                         MappingHardwareFeedback(std::move(**tech)));
+  MappingHardwareFeedbackSelection selection;
   std::vector<MappingHardwareFeedbackFamily> setAside;
-  if (*tech) {
-    selected = MappingHardwareFeedback(std::move(**tech));
-    // The families this attempt also offered are evidence only, so they are
-    // projected only when a reader asked for the record.
-    if (mapping_debug::enabled(mapping_debug::Level::Summary)) {
-      auto system = selectSystemHardwareFeedback(execution, artifacts);
-      if (!system)
-        return system.takeError();
-      if (*system)
-        setAside.push_back(
-            MappingHardwareFeedbackFamily::SystemAccCoreCapacity);
-      auto spatial = selectSpatialHardwareFeedback(execution, artifacts);
-      if (!spatial)
-        return spatial.takeError();
-      if (*spatial)
-        setAside.push_back(MappingHardwareFeedbackFamily::SpatialRouting);
-    }
-  } else {
-    auto system = selectSystemHardwareFeedback(execution, artifacts);
-    if (!system)
-      return system.takeError();
-    if (*system) {
-      selected = MappingHardwareFeedback(std::move(**system));
-      if (mapping_debug::enabled(mapping_debug::Level::Summary)) {
-        auto spatial = selectSpatialHardwareFeedback(execution, artifacts);
-        if (!spatial)
-          return spatial.takeError();
-        if (*spatial)
-          setAside.push_back(MappingHardwareFeedbackFamily::SpatialRouting);
-      }
-    } else {
-      auto spatial = selectSpatialHardwareFeedback(execution, artifacts);
-      if (!spatial)
-        return spatial.takeError();
-      if (*spatial)
-        selected = MappingHardwareFeedback(std::move(**spatial));
-    }
+  if (!offered.empty()) {
+    selection.deepestOffered = offered.front().first;
+    auto chosen = llvm::find_if(offered, [&](const auto &entry) {
+      return entry.first != previouslyConsumed;
+    });
+    if (chosen == offered.end())
+      chosen = offered.begin();
+    for (auto &entry : offered)
+      if (&entry != &*chosen)
+        setAside.push_back(entry.first);
+    selection.consumed = std::move(chosen->second);
   }
   mapping_debug::emit(
       mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
       mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
         fields["operation"] = "hardware_feedback_family_selection";
-        if (selected)
+        if (selection.consumed)
           fields["consumed_family"] = mappingHardwareFeedbackFamilySpelling(
-              mappingHardwareFeedbackFamily(*selected));
+              mappingHardwareFeedbackFamily(*selection.consumed));
         else
           fields["consumed_family"] = nullptr;
+        if (selection.deepestOffered)
+          fields["deepest_offered_family"] =
+              mappingHardwareFeedbackFamilySpelling(*selection.deepestOffered);
+        else
+          fields["deepest_offered_family"] = nullptr;
         llvm::json::Array families;
         for (MappingHardwareFeedbackFamily family : setAside)
           families.push_back(mappingHardwareFeedbackFamilySpelling(family));
         fields["set_aside_families"] = std::move(families);
         fields["diagnostic"] =
-            selected ? "the reopen consumes one family and sets the rest aside"
-                     : "this attempt offered no exact hardware feedback at all";
+            selection.consumed
+                ? "the reopen consumes one family and sets the rest aside"
+                : "this attempt offered no exact hardware feedback at all";
       });
-  return selected;
+  return selection;
 }
 
 llvm::Expected<std::optional<HardwareRecipeGrowth>>

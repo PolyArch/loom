@@ -56,6 +56,9 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     JointSoftwareCoverage coverage;
     JointDesignExecution execution;
     std::optional<MappingHardwareFeedback> feedback;
+    /// The deepest Mapping boundary this attempt reached with an exact
+    /// proposal, which ranks it among the failed candidates.
+    std::optional<MappingHardwareFeedbackFamily> deepestOffered;
   };
   struct VerifiedAlternative final {
     std::uint64_t planOrdinal = 0;
@@ -989,7 +992,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       auto feedback = selectMappingHardwareFeedback(*initial, artifacts);
       if (!feedback)
         return feedback.takeError();
-      if (*feedback) {
+      if (feedback->consumed) {
         auto coverage = projectJointSoftwareCoverage(plan, artifacts);
         if (!coverage)
           return coverage.takeError();
@@ -1000,17 +1003,18 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
               fields["plan_ordinal"] = indexed.index();
               fields["tech_feedback"] =
                   std::holds_alternative<TechHardwareFeedbackObservation>(
-                      **feedback);
+                      *feedback->consumed);
               fields["spatial_feedback"] = std::holds_alternative<
-                  mapping::SpatialMappingHardwareFeedback>(**feedback);
+                  mapping::SpatialMappingHardwareFeedback>(*feedback->consumed);
               fields["system_feedback"] =
                   std::holds_alternative<SystemHardwareFeedbackObservation>(
-                      **feedback);
+                      *feedback->consumed);
               fields["parent_disposition"] = "incomplete";
             });
         failedSoftwareAttempts.push_back(
             {static_cast<std::uint64_t>(indexed.index()), planPointer,
-             std::move(*coverage), std::move(*initial), std::move(*feedback)});
+             std::move(*coverage), std::move(*initial), std::move(feedback->consumed),
+             feedback->deepestOffered});
       } else if (!firstIncomplete) {
         firstIncomplete = std::move(*initial);
       }
@@ -1034,7 +1038,8 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       return feedback.takeError();
     failedSoftwareAttempts.push_back(
         {static_cast<std::uint64_t>(indexed.index()), planPointer,
-         std::move(*coverage), std::move(*initial), std::move(*feedback)});
+         std::move(*coverage), std::move(*initial), std::move(feedback->consumed),
+             feedback->deepestOffered});
   }
   // Hardware feedback is consumed only after every bounded software/System
   // pair has been tried on the parent System. This preserves the declared
@@ -1046,8 +1051,16 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     for (FailedSoftwareAttempt &attempt : failedSoftwareAttempts)
       if (attempt.feedback)
         hardwareFeedbackFrontier.push_back(&attempt);
+    // The deepest boundary an attempt reached with an exact proposal ranks
+    // it, whichever family the reopen consumes: a candidate whose Mapping
+    // reached transport names the exact resource it ran out of, while a Hall
+    // deficit only reports that a cover was not admitted, so a large plan with
+    // a Hall deficit never displaces a smaller plan that carries a transport
+    // proposal.
     llvm::sort(hardwareFeedbackFrontier, [&](const FailedSoftwareAttempt *lhs,
                                              const FailedSoftwareAttempt *rhs) {
+      if (lhs->deepestOffered != rhs->deepestOffered)
+        return lhs->deepestOffered > rhs->deepestOffered;
       if (lhs->feedback->index() != rhs->feedback->index())
         return lhs->feedback->index() > rhs->feedback->index();
       const auto *lhsSpatial =
@@ -1091,8 +1104,15 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
           return candidateObjective.takeError();
         if (!*candidateObjective)
           continue;
+        // The promotion objective orders candidates within one reached
+        // boundary; it never lifts a shallower boundary above a deeper one.
         auto insertion = ranked.begin();
-        for (; insertion != ranked.end(); ++insertion) {
+        while (insertion != ranked.end() &&
+               (*insertion)->deepestOffered > candidate->deepestOffered)
+          ++insertion;
+        for (; insertion != ranked.end() &&
+               (*insertion)->deepestOffered == candidate->deepestOffered;
+             ++insertion) {
           auto existingObjective = acquireHardwarePromotion(
               *(*insertion)->plan, (*insertion)->planOrdinal);
           if (!existingObjective)

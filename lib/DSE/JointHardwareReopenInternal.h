@@ -277,9 +277,24 @@ llvm::Expected<std::optional<SystemHardwareFeedbackObservation>>
 selectSystemHardwareFeedback(const JointDesignExecution &execution,
                              const ArtifactStore &artifacts);
 
-llvm::Expected<std::optional<MappingHardwareFeedback>>
-selectMappingHardwareFeedback(const JointDesignExecution &execution,
-                              const ArtifactStore &artifacts);
+/// What one failed attempt offers the reopen. `consumed` is the one family
+/// the reopen answers; `deepestOffered` is the deepest Mapping boundary the
+/// attempt reached with an exact proposal, which ranks the attempt among the
+/// failed candidates whether or not that boundary's family is the one
+/// consumed. An attempt that offered no exact feedback carries neither.
+struct MappingHardwareFeedbackSelection final {
+  std::optional<MappingHardwareFeedback> consumed;
+  std::optional<MappingHardwareFeedbackFamily> deepestOffered;
+};
+
+/// `previouslyConsumed` is the family a reopen chain answered on its previous
+/// probe. A child that keeps offering that family together with another one
+/// is answered on the other, so a chain alternates between the families a
+/// candidate keeps offering and starves none of them.
+llvm::Expected<MappingHardwareFeedbackSelection> selectMappingHardwareFeedback(
+    const JointDesignExecution &execution, const ArtifactStore &artifacts,
+    std::optional<MappingHardwareFeedbackFamily> previouslyConsumed =
+        std::nullopt);
 
 /// `preference` carries the reopen chain's evidence about compute-context
 /// supply. See TechMappingHardwareFeedback.h. An absent result is the typed

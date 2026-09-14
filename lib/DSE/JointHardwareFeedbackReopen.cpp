@@ -144,6 +144,9 @@ tryHardwareFeedbackReopen(
   // every later probe would shrink the window geometrically and spend the
   // parent slice on probes too small to finish.
   bool retreatShareReserved = false;
+  // The family the previous probe answered; a child that keeps offering it
+  // together with another family is answered on the other one.
+  std::optional<MappingHardwareFeedbackFamily> previouslyConsumedFamily;
   const std::uint64_t candidateLimit =
       request.stoppingPolicy == JointDesignStoppingPolicy::BoundedQuality &&
               request.boundedQuality
@@ -154,9 +157,14 @@ tryHardwareFeedbackReopen(
        ++candidateOrdinal) {
     if (dispatchDeadlineReached(effectiveExecutionPolicy))
       break;
-    auto feedback = selectMappingHardwareFeedback(*currentFailure, artifacts);
-    if (!feedback)
-      return feedback.takeError();
+    auto selection = selectMappingHardwareFeedback(*currentFailure, artifacts,
+                                                   previouslyConsumedFamily);
+    if (!selection)
+      return selection.takeError();
+    std::optional<MappingHardwareFeedback> *const feedback =
+        &selection->consumed;
+    if (*feedback)
+      previouslyConsumedFamily = mappingHardwareFeedbackFamily(**feedback);
     const auto *techObservation =
         *feedback ? std::get_if<TechHardwareFeedbackObservation>(&**feedback)
                   : nullptr;

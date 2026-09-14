@@ -3795,17 +3795,28 @@ already has admitted Spatial mappings, and Spatial feedback already has an
 admitted TechMapping. It does not also grow hardware for rejected alternatives
 from earlier stages.
 
-One boundary is not ordered that way, because it is not a later boundary at
-all. Compute supply is a precondition for routing, so an attempt that holds a
-closed compute-context Hall observation was refused before any route existed. A
-Spatial or System failure of that same candidate is the consequence of mapping
-around the deficit rather than an independent boundary to repair, and it does
-not make the observation stale. The controller therefore consumes a closed Hall
-deficit first, and judges an attempt by its Spatial or System feedback only when
-it holds no Hall deficit. Withholding the reopen remains the record for an
-attempt that offers no exact feedback of any family; the selection names the
-family it consumed and the families it set aside, so a reader can tell an
-attempt that offered several from one that offered none.
+A compute-context Hall deficit leads only for an attempt that reached no
+later boundary: compute supply is a precondition for routing, and an attempt
+whose cover was never admitted was refused before any route existed. An
+attempt that mapped around its Hall deficit and reached transport names the
+exact resource it ran out of, so its Spatial or System proposal is consumed
+first and the Hall deficit is set aside for the chain; a Hall observation that
+coexists with an admitted Mapping is not stale, but it is not the boundary the
+attempt ran out of. A reopen chain alternates between the families a child
+keeps offering: the family its parent's probe answered yields to the other one
+the child still offers, so a chain answers every family a candidate keeps
+offering and starves none, while a child that offers only the answered family
+is answered on it again under the Hall stagnation rule. The deepest boundary an
+attempt reached also ranks it among the failed candidates, so an attempt that
+reached transport ranks ahead of one whose cover was never admitted, and the
+promotion objective orders candidates only within one reached boundary.
+Withholding the reopen remains the record for an attempt that offers no exact
+feedback of any family; the selection names the family it consumed, the deepest
+family it offered, and the families it set aside, so a reader can tell an
+attempt that offered several from one that offered none. The qualification
+search certifies that a recipe's supply can close rather than closing one
+candidate under a window, so it still answers every Hall deficit before it
+believes a Spatial deficit.
 
 System capacity feedback raises the
 AccCore count by exactly one only when every current occurrence targets the
