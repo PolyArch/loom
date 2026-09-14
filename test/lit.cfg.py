@@ -34,9 +34,13 @@ except ValueError:
     _test_jobs = 0
 if _test_jobs < 1:
     _test_jobs = max(1, min((os.cpu_count() or 1) - 4, 120))
-lit_config.parallelism_groups["resource-intensive"] = max(
-    1, min(_test_jobs, 6)
-)
+# Two resource groups bound the heavy rows independently. Mapping search rows
+# (system, pnr) each spend a multi-threaded Spatial PnR; EDA tool rows
+# (hardware, eda) each drive a Verilator or Yosys process tree. A worker that
+# draws a row of a full group waits on that group alone, so the two kinds of
+# heavy work no longer serialize behind one shared bound.
+lit_config.parallelism_groups["mapping-search"] = max(1, min(_test_jobs, 6))
+lit_config.parallelism_groups["eda-tools"] = max(1, min(_test_jobs, 6))
 # Each full-budget RTL invocation partitions the complete configured host job
 # budget among its independent compiler commands. More than one such test in
 # the same lit run would multiply that budget across processes.
