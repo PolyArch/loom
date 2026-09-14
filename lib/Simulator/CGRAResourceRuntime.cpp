@@ -496,41 +496,47 @@ CgraResourceRuntime::grant(llvm::ArrayRef<CgraResourceRequest> requests,
     // cursor's next state does read this coordinate's requests, which is the
     // one place arbitration observes them; it emerges as state at the next
     // coordinate and never reaches this coordinate's grant.
-    const auto requested = [&](std::uint32_t position) {
-      return begins[position] != ends[position];
+    // A requester is eligible when it requested at this coordinate and its
+    // claim envelope is feasible against the coordinate-start occupancy: it
+    // could acquire now if the cursor named it. Eligibility is read before
+    // the cursor's own grant, as RTL reads cycle-start readiness, so the
+    // requesters a grant displaces in this coordinate still take the cursor.
+    llvm::SmallVector<bool, 8> eligibleAtStart(domain.requesterCount, false);
+    for (std::uint32_t position = 0; position != domain.requesterCount;
+         ++position)
+      eligibleAtStart[position] =
+          begins[position] != ends[position] &&
+          feasible(pending[begins[position]].request.selectedUseOrdinal);
+    const auto eligible = [&](std::uint32_t position) {
+      return eligibleAtStart[position];
     };
     std::uint32_t &cursor = domainCursors_[domainOrdinal];
     const std::uint32_t pointed = cursor;
-    // The first requester strictly after the cursor that requested here, and
-    // the cursor itself when no other did. Holding rather than drifting is
-    // what keeps a lone requester granted at every coordinate.
-    const auto scan = [&]() {
-      for (std::uint32_t offset = 1; offset != domain.requesterCount;
-           ++offset) {
-        const std::uint32_t position =
-            (pointed + offset) % domain.requesterCount;
-        if (requested(position))
-          return position;
-      }
+    if (eligible(pointed))
+      grants.push_back(acquire(pending[begins[pointed]]));
+    const auto requested = [&](std::uint32_t position) {
+      return begins[position] != ends[position];
+    };
+    // The first eligible requester from the scan start; when none is
+    // eligible, the first requesting one, so a requester waiting on capacity
+    // is already named when that capacity returns; and the cursor itself when
+    // none requests. Holding rather than drifting keeps a lone requester
+    // granted at every coordinate; moving past a requester whose claim is
+    // infeasible keeps a component from waiting on it while another could
+    // acquire.
+    const auto scan = [&](std::uint32_t first) {
+      for (std::uint32_t offset = 0; offset != domain.requesterCount; ++offset)
+        if (eligible((first + offset) % domain.requesterCount))
+          return (first + offset) % domain.requesterCount;
+      for (std::uint32_t offset = 0; offset != domain.requesterCount; ++offset)
+        if (requested((first + offset) % domain.requesterCount))
+          return (first + offset) % domain.requesterCount;
       return pointed;
     };
-    bool fired = false;
-    if (requested(pointed)) {
-      const PendingRequest &request = pending[begins[pointed]];
-      if (feasible(request.request.selectedUseOrdinal)) {
-        grants.push_back(acquire(request));
-        fired = true;
-      }
-    }
     if (domain.policy == CgraGrantPolicyKind::FixedPriority) {
-      for (std::uint32_t position = 0; position != domain.requesterCount;
-           ++position)
-        if (requested(position)) {
-          cursor = position;
-          break;
-        }
-    } else if (fired || !requested(pointed)) {
-      cursor = scan();
+      cursor = scan(0);
+    } else {
+      cursor = scan((pointed + 1) % domain.requesterCount);
     }
     first = last;
   }

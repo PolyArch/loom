@@ -333,13 +333,14 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
                 accessor.getInput("clock"), accessor.getInput("reset"),
                 "switch_grant_" + std::to_string(component.inputs.front()),
                 clockReset);
-            // A requester of the component is an input whose resident row
-            // selects an output and whose token has arrived; the pointer's
-            // next value observes exactly that.
-            llvm::SmallVector<mlir::Value> componentRequest;
-            llvm::SmallVector<mlir::Value> fired;
-            componentRequest.reserve(component.requesterOrder.size());
-            fired.reserve(component.requesterOrder.size());
+            // An input is eligible when its resident row selects an output,
+            // its token has arrived, and every output that row selects is
+            // ready: it could transfer this cycle if the pointer named it.
+            // The pointer's next value observes exactly that.
+            llvm::SmallVector<mlir::Value> componentEligible;
+            llvm::SmallVector<mlir::Value> componentRequested;
+            componentEligible.reserve(component.requesterOrder.size());
+            componentRequested.reserve(component.requesterOrder.size());
             for (auto [position, input] :
                  llvm::enumerate(component.requesterOrder)) {
               grantedInput[input] = andValues(
@@ -348,15 +349,14 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
               transferInput[input] =
                   andValues(bodyBuilder, location,
                             {grant.pointed[position], requested[input]});
-              componentRequest.push_back(requested[input]);
-              fired.push_back(andValues(
-                  bodyBuilder, location,
-                  {transferInput[input], routeReady[input]}));
+              componentEligible.push_back(andValues(
+                  bodyBuilder, location, {requested[input], routeReady[input]}));
+              componentRequested.push_back(requested[input]);
             }
             advanceRegisteredGrant(
                 bodyBuilder, location, grant,
-                packBits(bodyBuilder, location, componentRequest),
-                orValues(bodyBuilder, location, fired));
+                packBits(bodyBuilder, location, componentEligible),
+                packBits(bodyBuilder, location, componentRequested));
             continue;
           }
 
@@ -464,8 +464,9 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
   if (materializationError)
     return invalid(*materializationError);
   std::vector<std::uint8_t> implementationKey;
-  // The switch implementation identity; 4 is the registered grant.
-  appendKeyU64(implementationKey, 4);
+  // The switch implementation identity; 5 is the registered grant whose
+  // pointer yields a refusing input to one that could transfer.
+  appendKeyU64(implementationKey, 5);
   appendKeyU64(implementationKey, static_cast<std::uint32_t>(*schedule));
   appendKeyU64(implementationKey, decoder->encodedBitCount);
   appendKeyU64(implementationKey, clockReset.asynchronousReset);

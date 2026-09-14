@@ -1015,11 +1015,21 @@ llvm::Expected<PeModule> buildTemporalPeModule(
               accessor.getInput("clock"), accessor.getInput("reset"),
               "operand_unit_" + std::to_string(unitOrdinal) + "_enqueue",
               clockReset);
-          // A member requests only while no other active member outranks it,
-          // so the pointer's scan keeps the class priority the unit has
-          // always applied and breaks ties round-robin.
-          llvm::SmallVector<mlir::Value> requests;
-          requests.reserve(memberCount);
+          // A member is admissible while a token has arrived for it and its
+          // queue has cycle-start capacity; it is eligible while no other
+          // admissible member outranks it, so the pointer's scan keeps the
+          // class priority the unit has always applied, breaks ties
+          // round-robin, and never waits on a member whose queue is full while
+          // another member could enqueue: a pointer that did would deadlock a
+          // unit shared by the two operand ports of one FU, whose full queue
+          // drains only after the other port's operand arrives.
+          std::vector<mlir::Value> admissible(memberCount);
+          for (std::size_t member = 0; member != memberCount; ++member)
+            admissible[member] = andValues(
+                bodyBuilder, location,
+                {active[member], queueRuntime[unit.queues[member]].enqueueReady});
+          llvm::SmallVector<mlir::Value> eligible;
+          eligible.reserve(memberCount);
           for (std::size_t member = 0; member != memberCount; ++member) {
             llvm::SmallVector<mlir::Value> higher;
             for (std::size_t other = 0; other != memberCount; ++other) {
@@ -1027,26 +1037,22 @@ llvm::Expected<PeModule> buildTemporalPeModule(
                 continue;
               higher.push_back(andValues(
                   bodyBuilder, location,
-                  {active[other],
+                  {admissible[other],
                    circt::comb::ICmpOp::create(
                        bodyBuilder, location, circt::comb::ICmpPredicate::ugt,
                        rank[other], rank[member], true)}));
             }
-            requests.push_back(
+            eligible.push_back(
                 andValues(bodyBuilder, location,
-                          {active[member],
+                          {admissible[member],
                            circt::comb::createOrFoldNot(
                                bodyBuilder, location,
                                orValues(bodyBuilder, location, higher))}));
             queueGrant[unit.queues[member]] = grant.pointed[member];
           }
-          llvm::SmallVector<mlir::Value> committedMembers;
-          for (std::uint32_t queue : unit.queues)
-            committedMembers.push_back(queueRuntime[queue].enqueueCommit);
-          advanceRegisteredGrant(
-              bodyBuilder, location, grant,
-              packBits(bodyBuilder, location, requests),
-              orValues(bodyBuilder, location, committedMembers));
+          advanceRegisteredGrant(bodyBuilder, location, grant,
+                                 packBits(bodyBuilder, location, eligible),
+                                 packBits(bodyBuilder, location, active));
         }
 
         // ready = any_match AND AND(!match[i] OR queue_ready[i]);
@@ -1250,8 +1256,6 @@ llvm::Expected<PeModule> buildTemporalPeModule(
         };
         std::vector<FifoReadCandidate> fifoReadCandidates;
         std::vector<mlir::Value> fifoReadSelected(layout.registerFifoCount);
-        std::vector<circt::Backedge> fifoReadCommitted;
-        fifoReadCommitted.reserve(layout.registerFifoCount);
         for (std::uint32_t fifo = 0; fifo != layout.registerFifoCount; ++fifo) {
           std::vector<std::vector<mlir::Value>> selectorMatches(
               layout.contextCount,
@@ -1292,7 +1296,11 @@ llvm::Expected<PeModule> buildTemporalPeModule(
                          packedFifoRequesterKind});
           // The read service belongs to the one requester the registered grant
           // pointer names, never to whichever requester this cycle's scan
-          // would reach first; the pointer then takes this cycle's requests.
+          // would reach first. Whether the pointed requester commits depends
+          // on its FU's issue, which is decided after the grant, so the
+          // pointer rotates over this cycle's requesters: a requester that
+          // cannot commit yields its turn to the next requester rather than
+          // holding the FIFO's read service.
           RegisteredGrant grant = makeRegisteredGrant(
               bodyBuilder, location, backedges, requestCount,
               /*roundRobin=*/true, /*resetPosition=*/0,
@@ -1300,16 +1308,8 @@ llvm::Expected<PeModule> buildTemporalPeModule(
               "register_fifo_" + std::to_string(fifo) + "_read", clockReset);
           fifoReadSelected[fifo] = circt::comb::AndOp::create(
               bodyBuilder, location, grant.oneHot, packedRequests, true);
-          fifoReadCommitted.push_back(
-              backedges.get(bodyBuilder.getIntegerType(requestCount)));
-          advanceRegisteredGrant(
-              bodyBuilder, location, grant, packedRequests,
-              circt::comb::ICmpOp::create(
-                  bodyBuilder, location, circt::comb::ICmpPredicate::ne,
-                  fifoReadCommitted.back(),
-                  circt::hw::ConstantOp::create(
-                      bodyBuilder, location, llvm::APInt(requestCount, 0)),
-                  true));
+          advanceRegisteredGrant(bodyBuilder, location, grant, packedRequests,
+                                 packedRequests);
         }
 
         std::vector<std::vector<std::vector<std::vector<mlir::Value>>>>
@@ -1555,7 +1555,6 @@ llvm::Expected<PeModule> buildTemporalPeModule(
               circt::hw::ConstantOp::create(
                   bodyBuilder, location, llvm::APInt(commitEligible.size(), 0)),
               true);
-          fifoReadCommitted[fifo].setValue(committed);
         }
 
         metrics.childOperations =

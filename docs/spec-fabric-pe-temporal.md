@@ -472,7 +472,10 @@ implicit discard.
 A shared allocation unit's one enqueue service is granted by the registered
 grant of `docs/spec-fabric-resource-contract.md`: the unit's grant cursor is a
 register, it names the one ingress port that may enqueue this cycle, and its
-next state is chosen from this cycle's arrivals. A port's `queue_ready`
+next state is chosen from this cycle's arrivals that the unit could admit: a
+port whose queue is full yields the cursor to a port whose token the unit
+could accept, so a unit shared by the two operand ports of one FU cannot
+deadlock on the port whose queue filled first. A port's `queue_ready`
 therefore observes the cursor, the unit's cycle-start capacity, and its own
 match, and it observes no other port's Valid of the same cycle. **The PE
 ingress contributes no cross-port Valid-to-Ready dependency**, which is exactly

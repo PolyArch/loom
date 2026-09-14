@@ -349,13 +349,17 @@ Arbitration follows the registered-cursor rule of
 `docs/spec-fabric-resource-contract.md`. At one coordinate the cursor names the
 only requester of its arbitration component that may acquire, so a component
 grants at most one requester per coordinate. The cursor entering the next
-coordinate is chosen from this coordinate's requests: a successful acquisition,
-and a cursor naming a requester that did not request, both move the cursor to
-the first requester strictly after it in the exact cycle that did request,
-holding where it is when no other requester did, while a requester that
-requested and was blocked keeps its turn. A lone continuous requester therefore
-acquires at every coordinate. A fixed-priority cursor becomes the component's
-highest-priority requester of this coordinate's requests. A component with one
+coordinate is chosen from this coordinate's eligible requesters, those that
+requested and whose claim envelope is feasible against the coordinate-start
+occupancy: the cursor moves to the first eligible requester strictly after it
+in the exact cycle; when none is eligible, to the first requesting one, so a
+requester waiting on capacity is already named when that capacity returns;
+and it holds when none requests. A lone continuous requester therefore
+acquires at every coordinate, and a requester whose claim is infeasible yields
+the cursor to one that could acquire rather than holding the component. A
+fixed-priority cursor becomes the component's highest-priority eligible
+requester of this coordinate, else its highest-priority requesting one, else
+holds. A component with one
 requester is not contended and acquires at the coordinate of its request.
 
 At one coordinate CGRA-sim commits due publication, retires effective releases,

@@ -314,14 +314,19 @@ the requester that may succeed is a function of state alone and never of a
 request presented in the same cycle. The cursor's next state may read this
 cycle's requests freely: that read ends at a register input and emerges one
 cycle later, so it adds no dependency from a request to a grant of the same
-cycle. `RoundRobin` advances work-conservingly: on a successful selection, and
-on a cycle whose cursor names a requester that did not request, the cursor
-moves to the first requester strictly after it in the exact cycle that did
-request, holding where it is when no other requester did; a requester that
-requested and did not succeed keeps its turn. A lone continuous requester
-therefore succeeds every cycle. `FixedPriority` sets its cursor to the
-highest-priority requester of this cycle's requests. Reset establishes
-`reset_cursor`. One resource grants at most one requester per arbitration
+cycle. A requester is eligible in a cycle when it requested and its claim is
+feasible, so that it could succeed if the cursor named it. `RoundRobin`
+advances work-conservingly and never waits on a requester that could not
+succeed while another could: every cycle the cursor moves to the first
+eligible requester strictly after it in the exact cycle; when no requester is
+eligible it moves to the first requesting one, so a requester waiting on
+capacity is already named when that capacity returns; and it holds when none
+requests. A lone continuous requester therefore succeeds every cycle, two
+continuous contenders alternate, and a requester whose claim is infeasible
+yields its turn to any requester whose claim is feasible and regains it in
+cycle order. `FixedPriority` sets its cursor to the highest-priority eligible
+requester of the cycle, else the highest-priority requesting one, else holds.
+Reset establishes `reset_cursor`. One resource grants at most one requester per arbitration
 component per cycle; a concrete resource composes selection steps only across
 independent components.
 

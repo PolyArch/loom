@@ -55,8 +55,8 @@ mlir::Value nextCursor(mlir::OpBuilder &builder, mlir::Location location,
 /// register, the grant pointer naming the one requester that may proceed;
 /// `pointed` is therefore a function of registered state alone and names
 /// exactly one position of the component-local policy order every cycle. The
-/// pointer's next value observes this cycle's live Valid vector, but feeds
-/// only the register's data input, so no readiness the grant gates is a
+/// pointer's next value observes this cycle's live eligibility vector, but
+/// feeds only the register's data input, so no readiness the grant gates is a
 /// function of a Valid of the same cycle.
 struct RegisteredGrant final {
   std::optional<circt::Backedge> next;
@@ -79,13 +79,20 @@ RegisteredGrant makeRegisteredGrant(mlir::OpBuilder &builder,
                                     llvm::StringRef name,
                                     const ClockResetPlan &clockReset);
 
-/// Closes the grant pointer's next-state function over `requests`, this
-/// cycle's live request word with one bit per component requester in the
-/// component-local policy order, and `fired`, the component's service of this
-/// cycle, which is the pointed requester's by construction.
+/// Closes the grant pointer's next-state function over two live words with
+/// one bit per component requester in the component-local policy order:
+/// `eligible`, the requesters that could be served this cycle if the pointer
+/// named them, and `requested`, the requesters whose token has arrived.
+/// RoundRobin moves the pointer to the first eligible requester strictly after
+/// it; when no requester is eligible it moves to the first requesting one, so
+/// a requester waiting on its service is already pointed at when that service
+/// resumes; and it holds when none requests. A pointed requester whose service
+/// refuses therefore never keeps its turn from a requester that could proceed.
+/// FixedPriority names the highest-priority eligible requester, else the
+/// highest-priority requesting one, else holds.
 void advanceRegisteredGrant(mlir::OpBuilder &builder, mlir::Location location,
-                            RegisteredGrant &grant, mlir::Value requests,
-                            mlir::Value fired);
+                            RegisteredGrant &grant, mlir::Value eligible,
+                            mlir::Value requested);
 
 /// A round-robin grant over a requester domain together with its registered
 /// cursor. A domain of at most one requester carries no cursor state.

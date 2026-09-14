@@ -13,7 +13,8 @@
 //    requester, a fresh request is granted in the cycle after its valid rises,
 //    a lone continuous stream keeps its turn every cycle, two continuous
 //    contenders alternate one transfer per cycle under either policy, and a
-//    pointed input whose downstream refuses holds its turn.
+//    pointed input whose downstream refuses keeps the pointer only while no
+//    other input could transfer.
 // Every fixture sweeps the complete input valid vector inside one cycle and
 // requires every input ready to be unchanged, which is the invariant that no
 // ready of a Temporal switch has a combinational path from any valid: the
@@ -643,9 +644,11 @@ endmodule
   }
 
   testbench << R"sv(
-    // A pointed requester whose downstream refuses holds its turn: no other
-    // input of the component is granted while it waits, and its output stays
-    // valid waiting for that readiness.
+    // A pointed requester whose downstream refuses keeps the pointer while
+    // no other input of the component could transfer: every input of this
+    // component selects the refusing output, so none is eligible, no other
+    // input is granted while it waits, and its output stays valid waiting for
+    // that readiness.
     @(negedge clock);
     input_1_valid = 0;
     input_2_valid = 0;

@@ -250,44 +250,35 @@ RegisteredGrant makeRegisteredGrant(mlir::OpBuilder &builder,
 }
 
 void advanceRegisteredGrant(mlir::OpBuilder &builder, mlir::Location location,
-                            RegisteredGrant &grant, mlir::Value requests,
-                            mlir::Value fired) {
+                            RegisteredGrant &grant, mlir::Value eligible,
+                            mlir::Value requested) {
   if (!grant.next)
     return;
   const unsigned count = static_cast<unsigned>(grant.pointed.size());
-  assert(mlir::cast<mlir::IntegerType>(requests.getType()).getWidth() ==
+  assert(mlir::cast<mlir::IntegerType>(eligible.getType()).getWidth() ==
              count &&
-         "packed request width disagrees with its grant domain");
+         mlir::cast<mlir::IntegerType>(requested.getType()).getWidth() ==
+             count &&
+         "packed eligibility width disagrees with its grant domain");
   const unsigned width =
       mlir::cast<mlir::IntegerType>(grant.pointer.getType()).getWidth();
-  if (!grant.roundRobin) {
-    // FixedPriority names the highest-priority requester of this cycle, and
-    // keeps the pointer when none requests.
-    grant.next->setValue(scanRequests(builder, location, requests, count,
-                                      constant(builder, location, width, 0),
-                                      grant.pointer));
-    return;
-  }
-  // RoundRobin passes its turn on once the pointed requester has proceeded or
-  // has nothing to offer, and otherwise keeps it, so a requester whose
-  // service refuses holds its turn. The scan begins strictly after the
-  // pointer and ends at the pointer, so a lone continuous requester keeps its
-  // own turn every cycle.
-  mlir::Value requestedAtPointer = circt::comb::ICmpOp::create(
-      builder, location, circt::comb::ICmpPredicate::ne,
-      circt::comb::AndOp::create(builder, location, requests, grant.oneHot,
-                                 true),
-      constant(builder, location, count, 0), true);
-  mlir::Value blocked =
-      andValues(builder, location,
-                {requestedAtPointer,
-                 circt::comb::createOrFoldNot(builder, location, fired)});
-  grant.next->setValue(circt::comb::MuxOp::create(
-      builder, location, blocked, grant.pointer,
-      scanRequests(builder, location, requests, count,
-                   incrementModulo(builder, location, grant.pointer, count),
-                   grant.pointer),
-      true));
+  // The scan start: the policy order's head for FixedPriority, the position
+  // after the pointer for RoundRobin. Both scans end at the pointer, so a
+  // pointer whose own requester is the only eligible or requesting one keeps
+  // it, and a lone continuous requester keeps its turn every cycle.
+  mlir::Value start =
+      grant.roundRobin ? incrementModulo(builder, location, grant.pointer, count)
+                       : constant(builder, location, width, 0);
+  // A requester that could be served now takes the pointer ahead of one that
+  // merely waits: a pointer that waited on a refusing requester while another
+  // could proceed would deadlock a component whose refusing output drains only
+  // after another input's token passes. When none could be served, the
+  // pointer moves onto a waiting requester so that it is already named when
+  // its service resumes.
+  mlir::Value waiting =
+      scanRequests(builder, location, requested, count, start, grant.pointer);
+  grant.next->setValue(
+      scanRequests(builder, location, eligible, count, start, waiting));
 }
 
 std::vector<mlir::Value> selectResultPresentation(

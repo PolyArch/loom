@@ -447,20 +447,24 @@ policy operation is the one-requester selection step of
 Components are physically output-disjoint, so distinct components grant
 independently without manufacturing cross-component exclusion.
 
-The grant pointer's next value is one function of the pointer, this cycle's
-Valid vector, and `fire`. Let `scan(pointer, valid)` be the first component
-requester strictly after `pointer` in the component-local projection of the
-policy cycle whose Valid is set, scanned cyclically and ending at `pointer`
-itself, which it returns when no other component input is valid:
+The grant pointer's next value is one function of the pointer and this
+cycle's transfer eligibility. Input `k` is **eligible** when it could transfer
+this cycle if the pointer named it:
 
 ```text
-RoundRobin:     next(pointer) = scan(pointer, valid)
-                                  if fire(in_pointer) or not valid(in_pointer)
-                              = pointer
-                                  otherwise
-FixedPriority:  next(pointer) = the highest-priority component requester whose
-                                Valid is set this cycle, and `pointer` when
-                                none is
+eligible(k) = valid(in_k) AND downstream_ready(k) AND capacity_feasible(k)
+```
+
+Let `scan(start, set)` be the first component requester at or after `start`
+in the component-local projection of the policy cycle that is in `set`,
+scanned cyclically and ending at `pointer` itself, which it returns when no
+component input is in `set`. `RoundRobin` starts strictly after the pointer;
+`FixedPriority` starts at the head of `requester_order`:
+
+```text
+next(pointer) = scan(start, eligible)   if some component input is eligible
+              = scan(start, valid)      if none is eligible and some is valid
+              = pointer                 otherwise
 ```
 
 Reset establishes the pointer at the component's reset requester: the first
@@ -468,21 +472,29 @@ component requester at or after the policy's typed `reset_requester` in cyclic
 order for `RoundRobin`, and the first component requester of `requester_order`
 for `FixedPriority`.
 
-The next-state function reads the current cycle's Valid, and that read is
-harmless: it reaches only the pointer register's next-state input and emerges
-as state one cycle later, so it creates no path from a Valid to any Ready and
-the handshake projection still carries no Valid-to-Ready arc from the switch.
-This is the only place the switch observes a Valid outside the fire term.
+The next-state function reads the current cycle's Valid and downstream
+readiness, and that read is harmless: it reaches only the pointer register's
+next-state input and emerges as state one cycle later, so it creates no path
+from a Valid to any Ready and the handshake projection still carries no
+Valid-to-Ready arc from the switch. This is the only place the switch observes
+a Valid outside the fire term.
 
-The RoundRobin advance is work-conserving. After a fire the pointer moves to
-the next valid requester rather than to the bare successor, so a component
-input streaming alone keeps the pointer and fires every cycle, and two
-continuous contenders alternate. An input that is valid but blocked keeps its
-turn, so a pointed input whose downstream never accepts holds its component.
-The FixedPriority pointer is the component's highest-priority requester of this
-cycle, which keeps that policy's stable direction and its existing absence of a
-starvation guarantee. No implementation may add an idle-presentation,
-look-ahead, or bypass path that would let a Valid reach a Ready.
+The RoundRobin advance is work-conserving and never waits on a blocked input
+while another input could transfer. After a fire the pointer moves to the next
+eligible input rather than to the bare successor, so a component input
+streaming alone keeps the pointer and fires every cycle, and two continuous
+contenders alternate. A pointed input that is valid but blocked yields its
+turn to any other eligible input and regains it in ring order; when no input
+is eligible the pointer moves onto a valid input, so an input waiting on its
+downstream is already named when that downstream accepts and fires in the
+cycle readiness returns. A pointer that waited on a blocked input while
+another could transfer would deadlock a component whose blocked output drains
+only after another input's token has passed, as a Temporal PE operand
+allocation unit shared by the two operand ports of one FU does. The
+FixedPriority pointer is the component's highest-priority eligible requester
+of this cycle, else its highest-priority valid one, which keeps that policy's
+stable direction and its existing absence of a starvation guarantee. No implementation may add an idle-presentation, look-ahead, or
+bypass path that would let a Valid reach a Ready.
 
 In a `RoundRobin` component with `n` inputs, a token whose input asserts Valid
 in cycle `t` fires no later than cycle `t + n` when downstream readiness and
